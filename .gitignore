@@ -4,4 +4,4 @@ target/
 # IntelliJ
 .idea/
 *.iml
-src/main/resources/application.properties
+application.properties
