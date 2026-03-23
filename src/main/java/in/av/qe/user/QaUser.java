@@ -1,39 +1,46 @@
 package in.av.qe.user;
 
+import com.microsoft.playwright.APIRequest;
+import com.microsoft.playwright.APIRequestContext;
+import com.microsoft.playwright.Playwright;
 import in.av.qe.api.MicroService;
-import io.restassured.RestAssured;
-import io.restassured.config.ObjectMapperConfig;
-import io.restassured.http.ContentType;
-import io.restassured.mapper.ObjectMapperType;
-import io.restassured.parsing.Parser;
-import io.restassured.specification.RequestSpecification;
 
 import javax.annotation.Nonnull;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 
 import static in.av.qe.utils.InfrastructureConstants.*;
-import static io.restassured.RestAssured.given;
 
 public class QaUser {
 
-    protected RequestSpecification rs;
+    private final Playwright playwright;
+    private final Map<String, String> commonHeaders;
 
     private QaUser(@Nonnull String login, @Nonnull String password) {
-        RestAssured.reset();
-        RestAssured.defaultParser = Parser.JSON;
-        RestAssured.config = RestAssured.config().objectMapperConfig((new ObjectMapperConfig(ObjectMapperType.GSON)));
-        this.rs = given().auth().preemptive().basic(login, password)
-                .accept(ContentType.JSON).contentType(ContentType.JSON);
+        Map<String, String> env = new HashMap<>();
+        env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+
+        this.playwright = Playwright.create(
+                new Playwright.CreateOptions().setEnv(env)
+        );
+        this.commonHeaders = new HashMap<>();
+        commonHeaders.put("Accept", "application/json");
+        commonHeaders.put("Content-Type", "application/json");
+        commonHeaders.put("Authorization", basicAuthHeader(login, password));
     }
 
-    public QaUser() { testUser(); }
+    public QaUser() {
+        this(user, password);
+    }
 
     public static QaUser testUser() {
-        return new QaUser(user,password);
+        return new QaUser(user, password);
     }
 
     public QaUser calls() {
-        this.rs.baseUri(baseUrlPart);
         return this;
     }
 
@@ -44,8 +51,20 @@ public class QaUser {
         } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
             throw new AssertionError(e.getMessage(), e);
         }
-        this.rs.basePath(ms.appPrefix());
-        ms.setRequestSpecification(this.rs);
+        String serviceBaseUrl = baseUrlPart + ms.appPrefix();
+
+        APIRequestContext requestContext = playwright.request().newContext(
+                new APIRequest.NewContextOptions()
+                        .setBaseURL(serviceBaseUrl)
+                        .setExtraHTTPHeaders(commonHeaders)
+        );
+
+        ms.setRequestContext(requestContext);
         return ms;
+    }
+
+    private static String basicAuthHeader(String login, String password) {
+        String value = login + ":" + password;
+        return "Basic " + Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
     }
 }

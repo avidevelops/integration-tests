@@ -1,28 +1,28 @@
 package in.av.qe.api;
 
+import com.microsoft.playwright.APIRequestContext;
 import in.av.qe.utils.ServicePath;
-import io.restassured.specification.RequestSpecification;
 
-import static in.av.qe.utils.ITRestAssured.isDebug;
+import static in.av.qe.utils.ITRestPlay.isDebug;
 
 public abstract class MicroService {
 
-    protected RequestSpecification rs;
+    protected APIRequestContext requestContext;
 
     protected ServicePath servicePath;
 
     public MicroService(ServicePath servicePath) { this.servicePath = servicePath; }
 
-    public void setRequestSpecification(RequestSpecification rs) {
-        this.rs = rs.log().method().and().log().uri();
+    public void setRequestContext(APIRequestContext requestContext) {
+        this.requestContext = requestContext;
         if (isDebug) {
-            this.rs.log().all();
+            System.out.printf("Initialized APIRequestContext for base path: %s%n", appPrefix());
         }
     }
 
     public String appPrefix() { return  this.servicePath.getAppPrefix(); }
 
-    public RequestSpecification getRequestSpecification() {
-        return this.rs;
+    public APIRequestContext getRequestSpecification() {
+        return this.requestContext;
     }
 }

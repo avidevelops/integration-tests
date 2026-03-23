@@ -3,11 +3,9 @@ package in.av.qe.api;
 import in.av.qe.utils.ServicePath;
 import in.av.qe.vo.ISBN;
 import in.av.qe.vo.Message;
-import io.restassured.http.ContentType;
 
 import static in.av.qe.user.QaUser.testUser;
-import static in.av.qe.utils.ITRestAssured.createByPost;
-import static in.av.qe.utils.ITRestAssured.deleteByDelete;
+import static in.av.qe.utils.ITRestPlay.*;
 
 public class Book extends MicroService {
 
@@ -23,10 +21,13 @@ public class Book extends MicroService {
     }
 
     public ISBN addListOfBooks(String booksToAdd) {
-        return createByPost(rs, BOOKS, booksToAdd, ContentType.JSON, 201).extract().as(ISBN.class);
+        return extractObject(ISBN.class, createByPost(requestContext, BOOKS, booksToAdd, "application/json", 201));
     }
 
     public Message deleteBook(String book) {
-        return deleteByDelete(rs, BOOKS, book, 204).extract().as(Message.class);
+        return extractObject(
+                Message.class,
+                deleteByDelete(requestContext, appPrefix() + BOOKS, book, 204)
+        );
     }
 }
