@@ -1,0 +1,128 @@
+package in.av.qe.auth;
+
+import com.microsoft.playwright.*;
+import lombok.extern.slf4j.Slf4j;
+
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static in.av.qe.utils.InfrastructureConstants.msAuthUrl;
+
+/**
+ * Handles Microsoft OAuth 2.0 Implicit Grant flow.
+ * <p>
+ * Opens the Microsoft authorization URL in a headless browser,
+ * completes login if needed, captures the redirect URL containing
+ * access_token in the fragment, and returns the raw MS access token.
+ * <p>
+ * Uses the shared Playwright instance from ApiTestRunner — browser
+ * is only launched once per run (not per auth call).
+ */
+@Slf4j
+public class MicrosoftImplicitAuth {
+    // Fragment pattern: access_token=<value>&...
+    private static final Pattern ACCESS_TOKEN_PATTERN =
+            Pattern.compile("[#&]access_token=([^&]+)");
+
+    // expires_in pattern from fragment
+    private static final Pattern EXPIRES_IN_PATTERN =
+            Pattern.compile("[#&]expires_in=([^&]+)");
+
+    private final Playwright playwright;
+
+    public MicrosoftImplicitAuth(Playwright playwright) {
+        this.playwright = playwright;
+    }
+
+    /**
+     * Launches a headless browser, navigates the implicit flow login,
+     * waits for redirect to localhost with token in fragment,
+     * then returns the raw Microsoft access_token.
+     */
+    public AuthToken acquireAuthToken(String userName, String password) {
+        log.info("[MS AUTH] Starting implicit grant flow for user: {}", userName);
+
+        // Use chromium — must be installed for browser-based auth
+        // This is the ONE place a real browser is needed in this framework
+        Browser browser = playwright.chromium().launch(
+                new BrowserType.LaunchOptions().setHeadless(true)
+        );
+
+        try (BrowserContext context = browser.newContext(
+                new Browser.NewContextOptions().setIgnoreHTTPSErrors(true)
+        )) {
+            Page page = context.newPage();
+
+            // Navigate to Microsoft authorization endpoint
+            page.navigate(msAuthUrl);
+
+            // If login page is shown (not SSO-silently resolved), fill credentials
+            if (page.url().contains("login.microsoftonline.com") && page.locator("input[type='email']").isVisible()) {
+                log.info("[MS AUTH] Login page detected — entering credentials.");
+
+                page.fill("input[type='email']", userName);
+                page.click("input[type='submit']");
+
+                page.waitForSelector("input[type='password']");
+                page.fill("input[type='password']", password);
+                page.click("input[type='submit']");
+
+                // "Stay signed in?" prompt — click No to keep it stateless
+                try {
+                    page.waitForSelector("#idBtn_Back", new Page.WaitForSelectorOptions()
+                            .setTimeout(3000));
+                    page.click("#idBtn_Back");
+                } catch (TimeoutError ignored) {
+                    // Prompt not shown — continue
+                }
+            }
+
+            // Wait for redirect to localhost:3000 with token in URL
+            page.waitForURL("**/localhost:3000/**",
+                    new Page.WaitForURLOptions().setTimeout(30_000));
+
+            String redirectUrl = page.url();
+            log.info("[MS AUTH] Redirect captured. Extracting token from fragment.");
+
+            return extractTokenFromFragment(redirectUrl);
+
+        } finally {
+            browser.close();
+        }
+    }
+
+    private AuthToken extractTokenFromFragment(String url) {
+        // Fragment comes after # — decode URL-encoded chars
+        String decoded = URLDecoder.decode(url, StandardCharsets.UTF_8);
+
+        Matcher tokenMatcher = ACCESS_TOKEN_PATTERN.matcher(decoded);
+        if (!tokenMatcher.find()) {
+            throw new AuthException(
+                    "access_token not found in redirect URL. URL: " + maskToken(decoded)
+            );
+        }
+        String accessToken = tokenMatcher.group(1);
+
+        // Parse expires_in — default to 3600 if not present
+        long expiresIn = 3600L;
+        Matcher expiresMatcher = EXPIRES_IN_PATTERN.matcher(decoded);
+        if (expiresMatcher.find()) {
+            expiresIn = Long.parseLong(expiresMatcher.group(1));
+        }
+
+        log.info("[MS AUTH] Token extracted successfully. Expires in {}s.", expiresIn);
+        return new AuthToken(accessToken, expiresIn);
+    }
+
+    // Mask token in logs for security
+    private String maskToken(String url) {
+        return url.replaceAll("access_token=[^&]+", "access_token=***MASKED***");
+    }
+
+    public static class AuthException extends RuntimeException {
+        public AuthException(String message) { super(message); }
+        public AuthException(String message, Throwable cause) { super(message, cause); }
+    }
+}
