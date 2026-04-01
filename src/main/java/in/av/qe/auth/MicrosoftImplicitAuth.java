@@ -11,15 +11,55 @@ import java.util.regex.Pattern;
 import static in.av.qe.utils.InfrastructureConstants.msAuthUrl;
 
 /**
- * Handles Microsoft OAuth 2.0 Implicit Grant flow.
+ * Automates Microsoft OAuth 2.0 Implicit Grant flow using a headless Chromium browser.
  * <p>
- * Opens the Microsoft authorization URL in a headless browser,
- * completes login if needed, captures the redirect URL containing
- * access_token in the fragment, and returns the raw MS access token.
+ * This is the only class in the framework that requires a real browser. It exists
+ * because the OAuth Implicit Flow delivers its token in the URL fragment
+ * (#access_token=...) which is a client-side-only construct — it is never sent
+ * over the network and cannot be captured by a pure HTTP client.
+ *
  * <p>
- * Uses the shared Playwright instance from ApiTestRunner — browser
- * is only launched once per run (not per auth call).
+ * How it works:
+ * </p>
+ * <ol>
+ *     <li>Launches a headless Chromium browser via the shared
+ *     {@code Playwright} instance.</li>
+ *     <li>Registers a {@code context.route()} intercept on
+ *     {@code localhost:3000/**} that responds with a minimal HTML page
+ *     ({@code route.fulfill()}), allowing the browser to "load" the redirect
+ *     destination even though no real server exists there.</li>
+ *     <li>Navigates to the Microsoft authorization URL.</li>
+ *     <li>If a login form appears (i.e., SSO silent resolution did not
+ *     occur), fills email and password and handles the "Stay signed in?"
+ *     prompt.</li>
+ *     <li>Waits for the browser to land on {@code localhost:3000} via
+ *     {@code page.waitForURL()}.</li>
+ *     <li>Reads {@code window.location.hash} via {@code page.evaluate()} —
+ *     this is where Microsoft places the {@code access_token} after the redirect.</li>
+ *     <li>Parses the {@code access_token} and {@code expires_in} values from
+ *     the fragment.</li>
+ *     <li>Closes the browser context immediately.</li>
+ * </ol>
+ *
+ * <p>
+ * Why {@code route.fulfill()} instead of a real server:
+ * </p>
+ * The redirect URI {@code (localhost:3000/sso)} must be a registered URI in
+ * Azure AD. Since no actual server runs at that address during tests, the
+ * browser would normally land on a {@code chrome-error://chromeWebData}
+ * page before the fragment can be read. {@code route.fulfill()} intercepts
+ * the request at the network layer and returns a synthetic 200 OK response,
+ * allowing the page to "load" and making {@code window.location.hash}
+ * accessible via {@code page.evaluate()}.
+ *
+ * <p>
+ * Thread safety: Each call to {@code acquireAuthToken()} opens and closes
+ * its own {@code Browser} and {@code BrowserContext}. The {@code Playwright}
+ * instance is shared but Playwright itself is safe for concurrent browser
+ * launches.
+ * </p>
  */
+
 @Slf4j
 public class MicrosoftImplicitAuth {
     // Fragment pattern: access_token=<value>&...
@@ -32,6 +72,14 @@ public class MicrosoftImplicitAuth {
 
     private final Playwright playwright;
 
+    /**
+     * Creates a new MicrosoftImplicitAuth bound to the given Playwright instance.
+     *
+     * <p>The Playwright instance is used only to launch a Chromium browser.
+     * It is not closed by this class — the caller retains ownership of its lifecycle.
+     *
+     * @param playwright a live Playwright instance; must not be null or closed
+     */
     public MicrosoftImplicitAuth(Playwright playwright) {
         this.playwright = playwright;
     }
@@ -46,11 +94,10 @@ public class MicrosoftImplicitAuth {
 
         // Use chromium — must be installed for browser-based auth
         // This is the ONE place a real browser is needed in this framework
-        Browser browser = playwright.chromium().launch(
-                new BrowserType.LaunchOptions().setHeadless(true)
-        );
 
-        try (BrowserContext context = browser.newContext(
+        try (Browser browser = playwright.chromium().launch(
+                new BrowserType.LaunchOptions().setHeadless(true)
+        ); BrowserContext context = browser.newContext(
                 new Browser.NewContextOptions().setIgnoreHTTPSErrors(true)
         )) {
             Page page = context.newPage();
@@ -88,8 +135,6 @@ public class MicrosoftImplicitAuth {
 
             return extractTokenFromFragment(redirectUrl);
 
-        } finally {
-            browser.close();
         }
     }
 
